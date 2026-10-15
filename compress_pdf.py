@@ -246,7 +246,11 @@ def compress_pdf_batch(root: tk.Tk, input_folder: str, output_folder: str, optio
     threshold_mb = options.get("threshold_mb", 10.0)
     threshold_bytes = threshold_mb * 1024 * 1024
 
-    pdf_files = [f for f in os.listdir(input_folder) if f.lower().endswith(".pdf")]
+   # Gather PDFs, but automatically ignore files that are already compressed outputs
+    pdf_files = [
+        f for f in os.listdir(input_folder) 
+        if f.lower().endswith(".pdf") and not f.lower().endswith("_comp.pdf")
+    ]
     
     if not pdf_files:
         print(f"\nNo PDF files found in '{input_folder}'.")
