@@ -1,3 +1,4 @@
+import gc
 import json
 import os
 import sys
@@ -47,8 +48,12 @@ def select_destination_folder(root: tk.Tk, initial_dir: str = "") -> str:
 
 
 def show_info(title: str, message: str, parent_window=None):
-    """Displays a pop-up information box."""
+    """Displays a pop-up information box safely."""
+    if parent_window:
+        parent_window.deiconify()  # Ensure window is visible if parented
     messagebox.showinfo(title, message, parent=parent_window)
+    if parent_window:
+        parent_window.withdraw()   # Hide it again if needed
 
 
 def prompt_compression_options(root: tk.Tk) -> dict | None:
@@ -300,7 +305,8 @@ def compress_pdf_batch(root: tk.Tk, input_folder: str, output_folder: str, optio
                     use_objstms=objstms_val,
                 )
                 doc.close()
-
+                gc.collect() # Force immediate memory reclamation for large PDFs
+                
                 # Calculate space metrics for summary
                 compressed_size = os.path.getsize(output_path)
                 total_original_bytes += file_size
