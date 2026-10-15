@@ -267,7 +267,7 @@ def compress_pdf_batch(root: tk.Tk, input_folder: str, output_folder: str, optio
         if file_size >= threshold_bytes:
             print(f"\n[Processing] '{filename}' ({file_size / (1024*1024):.2f} MB)")
             file_stem, ext = os.path.splitext(filename)
-            output_filename = f"{file_stem}_compressed{ext}"
+            output_filename = f"{file_stem}_comp{ext}"
             output_path = os.path.join(output_folder, output_filename)
 
             try:
