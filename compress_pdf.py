@@ -8,63 +8,61 @@ import pymupdf
 CONFIG_FILE = "app_config.json"
 
 
-def load_last_dir() -> str:
-    """Loads the last used directory from a local config file if it exists."""
+def load_config() -> dict:
+    """Loads saved directory settings from a local config file."""
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
-                config = json.load(f)
-                return config.get("last_destination", "")
+                return json.load(f)
         except Exception:
-            return ""
-    return ""
+            return {}
+    return {}
 
 
-def save_last_dir(folder_path: str):
-    """Saves the chosen destination folder to a local config file."""
+def save_config(config_data: dict):
+    """Saves directory settings to a local config file."""
     try:
         with open(CONFIG_FILE, "w") as f:
-            json.dump({"last_destination": folder_path}, f)
+            json.dump(config_data, f)
     except Exception as e:
         print(f"Failed to save config: {e}")
 
 
-def select_input_pdf(root: tk.Tk, initial_dir: str = "") -> str:
-    """Opens a native GUI file dialog to select a PDF file."""
-    return filedialog.askopenfilename(
+def select_input_folder(root: tk.Tk, initial_dir: str = "") -> str:
+    """Opens a folder dialog to select a folder containing PDFs to scan."""
+    return filedialog.askdirectory(
         parent=root,
-        title="Select a PDF File to Compress",
+        title="Select Input Folder Containing PDFs to Scan",
         initialdir=initial_dir,
-        filetypes=[("PDF Files", "*.pdf"), ("All Files", "*.*")],
     )
 
 
 def select_destination_folder(root: tk.Tk, initial_dir: str = "") -> str:
-    """Opens a folder dialog to select where the compressed file will be saved."""
+    """Opens a folder dialog to select where compressed files will be saved."""
     return filedialog.askdirectory(
         parent=root,
-        title="Select Destination Folder for Compressed PDF",
+        title="Select Destination Folder for Compressed PDFs",
         initialdir=initial_dir,
     )
 
 
-def show_info(title: str, message: str, parent_window):
+def show_info(title: str, message: str, parent_window=None):
     """Displays a pop-up information box."""
     messagebox.showinfo(title, message, parent=parent_window)
 
 
 def prompt_compression_options(root: tk.Tk) -> dict | None:
-    """Displays a GUI dialog allowing the user to configure PyMuPDF compression options."""
+    """Displays a GUI dialog allowing the user to configure batch scan and compression options."""
     dialog = tk.Toplevel(root)
-    dialog.title("PDF Optimization Settings")
-    dialog.geometry("425x380")
+    dialog.title("PDF Batch Optimization Settings")
+    dialog.geometry("450x480")
     dialog.resizable(False, False)
     dialog.attributes("-topmost", True)
 
     # Center window on screen reliably
     dialog.update_idletasks()
-    width = 425
-    height = 380
+    width = 450
+    height = 480
     x = (dialog.winfo_screenwidth() // 2) - (width // 2)
     y = (dialog.winfo_screenheight() // 2) - (height // 2)
     dialog.geometry(f"{width}x{height}+{x}+{y}")
@@ -74,6 +72,7 @@ def prompt_compression_options(root: tk.Tk) -> dict | None:
     var_image = tk.BooleanVar(value=True)
     var_quality = tk.IntVar(value=40)
     var_dpi = tk.IntVar(value=72)
+    var_threshold = tk.DoubleVar(value=10.0)  # File size threshold in MB
 
     selection_result = {}
 
@@ -81,8 +80,30 @@ def prompt_compression_options(root: tk.Tk) -> dict | None:
     frame.pack(fill=tk.BOTH, expand=True)
 
     ttk.Label(
-        frame, text="Configure Compression Options:", font=("Helvetica", 10, "bold")
+        frame, text="Configure Batch Scan & Compression Options:", font=("Helvetica", 10, "bold")
     ).pack(anchor="w", pady=(0, 10))
+
+    # File Size Threshold Slider
+    threshold_frame = ttk.Frame(frame)
+    threshold_frame.pack(fill=tk.X, pady=(0, 10))
+    lbl_threshold = ttk.Label(
+        threshold_frame, text=f"Minimum File Size Threshold ({var_threshold.get():.1f} MB):"
+    )
+    lbl_threshold.pack(anchor="w")
+
+    def update_threshold_label(val):
+        lbl_threshold.config(
+            text=f"Minimum File Size Threshold ({float(val):.1f} MB):"
+        )
+
+    slider_threshold = ttk.Scale(
+        threshold_frame,
+        from_=1.0,
+        to=100.0,
+        variable=var_threshold,
+        command=update_threshold_label,
+    )
+    slider_threshold.pack(fill=tk.X, pady=2)
 
     # Feature 1: Stream Compression
     f1_frame = ttk.Frame(frame)
@@ -192,6 +213,7 @@ def prompt_compression_options(root: tk.Tk) -> dict | None:
             )
             return
 
+        selection_result["threshold_mb"] = var_threshold.get()
         selection_result["do_stream"] = var_stream.get()
         selection_result["do_dedup"] = var_dedup.get()
         selection_result["do_image"] = var_image.get()
@@ -205,8 +227,8 @@ def prompt_compression_options(root: tk.Tk) -> dict | None:
     dialog.protocol("WM_DELETE_WINDOW", on_cancel)
 
     btn_frame = ttk.Frame(frame)
-    btn_frame.pack(fill=tk.X, pady=(10, 0))
-    ttk.Button(btn_frame, text="Compress", command=on_confirm).pack(
+    btn_frame.pack(fill=tk.X, pady=(15, 0))
+    ttk.Button(btn_frame, text="Start Batch Scan", command=on_confirm).pack(
         side=tk.RIGHT, padx=(5, 0)
     )
     ttk.Button(btn_frame, text="Cancel", command=on_cancel).pack(
@@ -219,75 +241,136 @@ def prompt_compression_options(root: tk.Tk) -> dict | None:
     return selection_result if selection_result else None
 
 
-def compress_pdf_heavy(input_path: str, output_folder: str, options: dict):
-    """Optimizes and compresses PDFs using PyMuPDF based on user configuration settings."""
-    base_name = os.path.basename(input_path)
-    file_stem, ext = os.path.splitext(base_name)
-    output_filename = f"{file_stem}_comp{ext}"
-    output_path = os.path.join(output_folder, output_filename)
+def compress_pdf_batch(root: tk.Tk, input_folder: str, output_folder: str, options: dict):
+    """Scans an input folder for PDFs exceeding the size threshold and compresses them."""
+    threshold_mb = options.get("threshold_mb", 10.0)
+    threshold_bytes = threshold_mb * 1024 * 1024
 
-    print(f"\nLoading '{input_path}'...")
-    doc = pymupdf.open(input_path)
+    pdf_files = [f for f in os.listdir(input_folder) if f.lower().endswith(".pdf")]
+    
+    if not pdf_files:
+        print(f"\nNo PDF files found in '{input_folder}'.")
+        show_info("Batch Scan Result", f"No PDF files found in:\n{input_folder}", root)
+        return
 
-    # 1. Image Resampling / Downscaling
-    if options.get("do_image"):
-        quality = options.get("image_quality", 40)
-        target_dpi = options.get("target_dpi", 72)
-        print(f"Downsampling images (Target: {target_dpi} DPI, Quality: {quality}%)...")
-        doc.rewrite_images(
-            dpi_threshold=target_dpi + 10,
-            dpi_target=target_dpi,
-            quality=quality,
-            lossy=True,
-        )
+    print(f"\nScanning '{input_folder}' for PDFs larger than {threshold_mb:.1f} MB...")
 
-    # 2. Save settings (Stream compression & garbage collection)
-    garbage_level = 3 if options.get("do_dedup") else 0
-    deflate_val = bool(options.get("do_stream"))
-    objstms_val = bool(options.get("do_stream"))
+    processed_count = 0
+    skipped_count = 0
+    total_original_bytes = 0
+    total_compressed_bytes = 0
 
-    print("Scrubbing document and writing optimized file...")
-    doc.save(
-        output_path,
-        garbage=garbage_level,
-        deflate=deflate_val,
-        use_objstms=objstms_val,
+    for filename in pdf_files:
+        input_path = os.path.join(input_folder, filename)
+        file_size = os.path.getsize(input_path)
+
+        if file_size >= threshold_bytes:
+            print(f"\n[Processing] '{filename}' ({file_size / (1024*1024):.2f} MB)")
+            file_stem, ext = os.path.splitext(filename)
+            output_filename = f"{file_stem}_compressed{ext}"
+            output_path = os.path.join(output_folder, output_filename)
+
+            try:
+                doc = pymupdf.open(input_path)
+
+                # 1. Image Resampling / Downscaling
+                if options.get("do_image"):
+                    quality = options.get("image_quality", 40)
+                    target_dpi = options.get("target_dpi", 72)
+                    doc.rewrite_images(
+                        dpi_threshold=target_dpi + 10,
+                        dpi_target=target_dpi,
+                        quality=quality,
+                        lossy=True,
+                    )
+
+                # 2. Save settings (Stream compression & garbage collection)
+                garbage_level = 3 if options.get("do_dedup") else 0
+                deflate_val = bool(options.get("do_stream"))
+                objstms_val = bool(options.get("do_stream"))
+
+                doc.save(
+                    output_path,
+                    garbage=garbage_level,
+                    deflate=deflate_val,
+                    use_objstms=objstms_val,
+                )
+                doc.close()
+
+                # Calculate space metrics for summary
+                compressed_size = os.path.getsize(output_path)
+                total_original_bytes += file_size
+                total_compressed_bytes += compressed_size
+
+                print(f" -> Saved to: {output_path} ({compressed_size / (1024*1024):.2f} MB)")
+                processed_count += 1
+            except Exception as e:
+                print(f" -> Error processing '{filename}': {e}")
+        else:
+            print(f"[Skipped] '{filename}' ({file_size / (1024*1024):.2f} MB is below {threshold_mb:.1f} MB threshold)")
+            skipped_count += 1
+
+    # Calculate final batch savings
+    saved_bytes = total_original_bytes - total_compressed_bytes
+    saved_mb = saved_bytes / (1024 * 1024)
+    orig_mb = total_original_bytes / (1024 * 1024)
+    comp_mb = total_compressed_bytes / (1024 * 1024)
+    percent_saved = (saved_bytes / total_original_bytes * 100) if total_original_bytes > 0 else 0
+
+    summary_msg = (
+        f"Batch Compression Complete!\n\n"
+        f"• Files Processed: {processed_count}\n"
+        f"• Files Skipped: {skipped_count}\n"
+        f"• Original Size: {orig_mb:.2f} MB\n"
+        f"• Compressed Size: {comp_mb:.2f} MB\n"
+        f"• Total Space Saved: {saved_mb:.2f} MB ({percent_saved:.1f}%)"
     )
-    doc.close()
 
-    print(f"\nDone! Compressed PDF saved to:\n{output_path}")
+    print(f"\n{summary_msg}")
+    show_info("Batch Summary", summary_msg, root)
 
 
 if __name__ == "__main__":
+    root = None
     try:
         root = tk.Tk()
         root.withdraw()
 
-        last_known_dir = load_last_dir()
-        input_file = select_input_pdf(root, initial_dir=last_known_dir)
+        config = load_config()
+        last_input_dir = config.get("last_input_dir", "")
 
-        if input_file:
-            input_dir = os.path.dirname(input_file)
+        # 1. Select input folder to scan
+        input_folder = select_input_folder(root, initial_dir=last_input_dir)
+
+        if input_folder:
+            # 2. Prompt options & threshold slider
             options = prompt_compression_options(root)
 
             if options:
-                default_dest_dir = last_known_dir if last_known_dir else input_dir
-                dest_folder = select_destination_folder(root, initial_dir=default_dest_dir)
+                last_dest_dir = config.get("last_destination", input_folder)
+                # 3. Select destination folder for compressed output
+                dest_folder = select_destination_folder(root, initial_dir=last_dest_dir)
 
                 if dest_folder:
-                    save_last_dir(dest_folder)
-                    compress_pdf_heavy(input_file, dest_folder, options)
+                    # Save directories to config for next run
+                    save_config({
+                        "last_input_dir": input_folder,
+                        "last_destination": dest_folder
+                    })
+                    # 4. Run batch processor with summary dialog
+                    compress_pdf_batch(root, input_folder, dest_folder, options)
                 else:
                     print("No destination folder selected. Exiting.")
             else:
-                print("Optimization cancelled.")
+                print("Batch optimization cancelled.")
         else:
-            print("No input file selected. Exiting.")
+            print("No input folder selected. Exiting.")
 
     except KeyboardInterrupt:
         print("\nProcess canceled by user. Exiting.")
     finally:
-        try:
-            root.destroy()
-        except Exception:
-            pass
+        if root:
+            try:
+                root.destroy()
+            except Exception:
+                pass
